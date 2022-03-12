@@ -1,0 +1,1191 @@
+
+```{r package loading}
+library(tidyverse)
+library(plyr)
+library(e1071)
+library(rpart)
+library(plotly)
+library(tidyr)
+library(dplyr)
+library(baseline)
+library(reshape)
+library(easyGgplot2)
+library(ggpubr)
+library(doParallel)
+library(tictoc)
+library(caret)
+library(Rtsne)
+library(ggplot2)
+library(extrafont)
+loadfonts(device = "win")
+```
+
+
+
+```{r BSL correction}
+########first set of data
+
+degree<-9
+
+
+
+path<-"E:\\Tufts\\data"
+getnm <- list.files(path = path)
+class<-getnm %>% 
+  as.data.frame() %>% 
+  tidyr::separate(col=".",
+                  c("experiment"),
+                  "_Copy.",extra = "drop",remove=T) %>% 
+  tidyr::separate(col="experiment",
+                  c("type","scan"),
+                  " ",extra = "drop",remove=F)
+
+setwd(path)
+
+spc<- getnm %>% 
+  lapply(read.delim, header = T,col.names = c("x","y","wave","intensity")) %>% 
+  tibble() %>% 
+  cbind(class) 
+
+spec<-spc%>% 
+  unnest()
+
+speca<-spec %>% 
+  spread(wave,intensity,fill= NA)
+
+data1<-speca[,-c(1:5)] 
+
+info1<-speca[,c(1:5)]
+wtno<-as.numeric(colnames(data1))
+
+
+a1<-matrix(unlist(data1),ncol=ncol(data1)) %>% 
+  baseline.modpolyfit(degree = degree, tol = 0.001, rep = 100)
+
+bsldatacells1<-a1$corrected %>%
+  as.data.frame() %>%
+  set_names(wtno)
+
+
+```
+
+```{r BSL correction2}
+############second set of data
+path<-"E:\\past work\\8-24\\mix\\mix 5_Copy.txt"
+class<-data.frame("mix 5","mix","5") %>% 
+  set_names(c("experiment","type","scan"))
+
+spc<- read.delim(path,header = T,col.names = c("x","y","wave","intensity")) %>% 
+  as.tibble() %>% 
+  cbind(class) %>% 
+  unnest()
+
+speca<-spc %>% 
+  spread(wave,intensity,fill= NA)
+
+data2<-speca[,-c(1:5)]
+info2<-speca[,c(1:5)]
+wtno<-as.numeric(colnames(data2))
+
+# dgr<-c(4:13)
+# bsl<-function(degree=dgr){
+#   a2<-matrix(unlist(data2[1,]),ncol=ncol(data2)) %>%
+#   baseline(degree = degree, tol = 0.001, rep = 100,method="modpolyfit")
+# plotBaseline(a2)
+# }
+# 
+# sapply(dgr,bsl)
+
+a2<-matrix(unlist(data2),ncol=ncol(data2)) %>% 
+  baseline.modpolyfit(degree = degree, tol = 0.001, rep = 100)
+
+bsldatacells2<-a2$corrected %>%
+  as.data.frame() %>%
+  set_names(wtno)
+
+spectra<-rbind(bsldatacells1,bsldatacells2)
+
+```
+
+```{r merge dataset}
+
+#########read dataset(already baseline corrected)
+#path<-"E:\\past work\\R processed data\\10-16 BSLC-training.csv"
+#path<-"E:\\past work\\R processed data\\8-29+bslcelldataset2.csv"
+#path1<-"F:\\My Drive\\dataset\\cell ML\\additional data.csv"
+
+path1<-"D:\\documents sd\\g drive\\dataset\\cell ML\\additional data.csv"
+
+path<-"E:\\past work\\R processed data\\ 2021-10-18 BSLC-training.csv"
+dataset<-read.csv(path,header=T)
+
+unique(dataset$testdate)
+
+dataset1<-read.csv(path1,header=T) 
+
+dataset %>%
+  colnames() %>% 
+  head(10)
+
+dataset1 %>%
+  colnames() %>% 
+  tail(10)
+
+sumdata<-rbind(dataset,dataset1)
+#sumdata<-dataset
+
+
+colndata<-colnames(sumdata) %>% 
+  str_remove("X") 
+
+colnames(sumdata)<-colndata
+
+info<-sumdata %>% 
+  select(last_col(c(0:7)))%>% 
+  mutate(type=ifelse(group=="cell1","B16F10",ifelse(group=="cell2","C2C12","PBS")))%>% 
+  mutate(testdate=ifelse(testdate=="3","day3",testdate))
+
+unique(info$testdate)
+
+#by commont out this lines, the spectra data are all from the bsl data calculated from the 2 sections above
+# spectra<-sumdata %>% 
+#   select(c(1:(ncol(dataset)-8))) 
+
+wtno<-colnames(spectra) %>% 
+  as.numeric()
+
+sumdata<-cbind(spectra,info) 
+
+# sumdata<-cbind(spectra,info) %>%
+#   filter(testdate!="day3")
+# 
+# spectra<-sumdata %>%
+#   select(c(1:(ncol(dataset)-8)))
+# 
+# info<-sumdata %>%
+#   select(last_col(c(0:7)))
+
+```
+
+
+with or without area normalization, the signature peaks picked are all show significant differences with welch student t test(unbalanced t-test).
+```{r PCA reconstruct spectra, spectra t-test}
+######## w/o normalization
+
+#D<-as.data.frame((diag(1/apply(spectra,1,sum)) %*% as.matrix(spectra)))  #area normalization
+D<-diag(1/apply(spectra[,which((wtno>=910)&(wtno<=920))],1,sum)) %*% as.matrix(spectra) #peak normalization
+#D<-spectra #original dataset
+
+PCA <- princomp(D) #nfile=360, the last column c361 is the wtno
+
+eigen<- loadings(PCA)[]
+scores<-  as.matrix(as.data.frame(PCA$scores))
+center<-PCA$center
+scale<-PCA$scale
+sdev<-PCA$sdev
+
+ncomp<-17
+denoise<-as.data.frame(scores[,c(1:ncomp)]%*% t(eigen[,c(1:ncomp)]))
+
+#with center
+#D<-denoise+center
+
+#without center
+DD<-denoise + center[col(denoise)]
+
+colnames(DD)<- wtno
+
+B16F10<-DD %>% cbind(info) %>% 
+  filter(type=="B16F10") %>% 
+  select(c(1:(ncol(dataset)-8)))
+
+C2C12<-DD %>% cbind(info) %>%
+  filter(type=="C2C12") %>% 
+  select(c(1:(ncol(dataset)-8)))
+
+PBS<-DD %>% cbind(info) %>%
+  filter(type=="PBS") %>% 
+  select(c(1:(ncol(dataset)-8)))
+
+meanspec<-DD %>%  cbind(info) %>%
+  gather("wtno","int",-c(colnames(info))) %>% 
+  group_by(type,wtno) %>% 
+  summarise(mean=mean(int),sd=sd(int)) %>% 
+  ungroup()
+
+p<-meanspec %>% select(-sd) %>% spread(type,mean)%>% 
+  mutate(bmc=B16F10-C2C12,bmp=B16F10-PBS,cmp=C2C12-PBS,wtno=as.numeric(wtno))%>% 
+  ggplot()+
+  geom_line(aes(wtno,bmc))
+ggplotly(p)
+
+write.csv(meanspec,"E:\\R processed data\\1-19 meanspec.csv")
+
+col.names<-colnames(spectra)
+t_test<-lapply(col.names,
+               function(t,d1,d2){t.test(d1[,t],d2[,t],var.equal=FALSE)$`p.value`},
+               B16F10,C2C12) %>% melt() %>% as.data.frame() %>% 
+  mutate(wtno=as.numeric(col.names))
+
+meanB16F10<- colMeans(B16F10)
+meanC2C12<- colMeans(C2C12)
+
+statsum<-cbind(meanB16F10,meanC2C12,t_test) %>% 
+  select(-4) %>% 
+  setNames(c("B16F10","C2C12","t_test","wtno")) 
+
+
+statsum%>% 
+  mutate(color=as.factor(ifelse(t_test>0.05,0,1))) %>% 
+  ggplot()+
+  geom_line(aes(wtno,t_test))+
+  geom_line(aes(wtno,B16F10*10,color="red"))+
+  geom_line(aes(wtno,C2C12*10,color="blue"))+
+  geom_hline(yintercept = 0.05)
+
+ggplotly(p)
+```
+
+```{r signiture peak statistical analysis, echo=FALSE, fig.height=2, fig.width=1.5}
+pmap<-cbind(info,
+            (DD[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+            (DD[,which((wtno>=1003)&(wtno<=1004))]),
+            (DD[,which((wtno>=1126)&(wtno<=1127))]),#protein
+            (DD[,which((wtno>=1340)&(wtno<=1341))]),
+            (DD[,which((wtno>=1451)&(wtno<=1452))]),
+            (DD[,which((wtno>=1580)&(wtno<=1581))]),
+            (DD[,which((wtno>=1656)&(wtno<=1657))])
+)%>% 
+  set_names(c(colnames(info),
+              "p749","p1003","p1126","p1340","p1451","p1580","p1656")) %>% 
+  filter(type!="PBS")
+
+
+library(RColorBrewer)
+display.brewer.all()
+mypalette = brewer.pal(8, "Set1")[c(2,4,6)]
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p749",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Nucleic acids \n(Trp)",
+                ytitle = expression(bold(paste(Raman~band~at~"749"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(
+    axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1003",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Protein \n(Phenylalanine)",
+                ytitle = expression(bold(paste(Raman~band~at~"1003"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1126",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Protein \n(Cytochrome C)",
+                ytitle = expression(bold(paste(Raman~band~at~"1126"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1340",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Protein, nucluic acids \n(amide III, guanine)",
+                ytitle = expression(bold(paste(Raman~band~at~"1340"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1451",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Lipids, protein \n(phospholipids, CH mods)",
+                ytitle = expression(bold(paste(Raman~band~at~"1451"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1580",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Nucleic acid \n(adenine, guanine)",
+                subTitle="adenine, guanine",
+                ytitle = expression(bold(paste(Raman~band~at~"1580"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+
+ggplot2.boxplot(pmap,
+                xName = "type",
+                yName = "p1656",
+                groupName = "type",
+                backgroundColor = "white",
+                mainTitle="Protein \n(Amide I α-helix)",
+                ytitle = expression(bold(paste(Raman~band~at~"1656"~cm^"-1"))),
+                xtitle = "",
+                addDot = T, dotSize = 0.1, dotPosition = "jitter",dotsize=0.5,
+                jitter = 0.1,
+                removePanelGrid = TRUE, PanelBorder = c(1, "solid", "black"),
+                axisLine=c(0, "solid", "black"),
+                legendPosition = "none",
+                # xShowTickLabel = FALSE,
+                outlier.shape=NA
+)+
+  # coord_cartesian(ylim=c(0.00,0.042))+
+  scale_fill_manual(values = mypalette) +
+  scale_color_manual(values = mypalette) +
+  stat_compare_means(label = "p.signif", method = "t.test",
+                     comparisons = list(c("B16F10","C2C12"))
+                     #,label.y = c(250)
+  )+
+  theme(axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=9, face="plain"),
+        axis.title.y = element_text(size=12,face="bold"),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r PCA before ML, fig.height=1.5, fig.width=2}
+#PCA-----------
+PCA <- princomp(D) #nfile=360, the last column c361 is the wtno
+
+eigen<- loadings(PCA)[]
+scores<-  as.matrix(as.data.frame(PCA$scores))
+center<-PCA$center
+scale<-PCA$scale
+sdev<-PCA$sdev
+
+
+plotPC<-function(npc=npc){
+  obs<-  scores[,npc] %>% 
+    as.data.frame() %>% 
+    set_names(c("Int")) %>% 
+    mutate(obs=seq(1:nrow(scores)))%>% 
+    filter(Int==ifelse(abs(max(Int))>abs(min(Int)),max(Int),min(Int))) %>% 
+    select(obs) %>% 
+    as.numeric()
+  
+  fig<-as.data.frame(scores[obs,c(npc)]%*% t(eigen[,c(npc)])) %>% 
+    t() %>% as.data.frame() %>% 
+    cbind(wtno) %>% 
+    set_names(c("pc","wtno")) %>% 
+    ggplot()+
+    geom_line(aes(wtno,pc))+
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Wavenumber")+
+    theme(text = element_text(size=30),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank());fig
+  
+  #orca(fig,file=paste0(npc,"pca.png"),format = "png")
+  
+  
+}
+
+
+lapply(c(1:25),plotPC)
+
+
+pcadata<-as.data.frame(PCA$scores)
+keypca<-pcadata[,1:15]
+
+
+library(palmerpenguins)
+library(ggforce)
+keypca %>% 
+  cbind(info) %>% 
+  filter(type!="PBS") %>% 
+  setNames(c(colnames(keypca),colnames(info))) %>% 
+  ggplot(aes(`Comp.2`,`Comp.3`,color=factor(type)))+
+  geom_point(aes(`Comp.2`,`Comp.3`,color=factor(type)),size=0.3)+
+  geom_density_2d(bins=8,alpha=0.6)+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "B16F10"),expand = unit(0, "mm"))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "C2C12"),expand = unit(0, "mm")) +
+  labs(y = "PC2",
+       x = "PC3",
+       color = "Cell line")+
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_rect(fill="white",color="black"),
+        panel.grid=element_blank(),
+        axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=11, face="bold"),
+        axis.title.y = element_text(size=12,face="bold"),
+        axis.title.x = element_text(size=12,face="bold"),
+        legend.position = "bottom")
+
+keypca %>% 
+  cbind(info) %>% 
+  filter(type!="PBS") %>% 
+  setNames(c(colnames(keypca),colnames(info))) %>% 
+  ggplot(aes(`Comp.1`,`Comp.2`,color=factor(testdate)))+
+  geom_point(aes(`Comp.1`,`Comp.2`,color=factor(testdate)))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = testdate == "day1"),expand = unit(0, "mm"))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = testdate == "day2"),expand = unit(0, "mm"))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = testdate == "day3"),expand = unit(0, "mm"))
+
+
+
+
+keypca %>% 
+  cbind(info[,"type"]) %>% 
+  setNames(c(colnames(keypca),"type")) %>% 
+  plot_ly(x=~`Comp.1`,y=~`Comp.2`,z=~`Comp.3`,
+          type = "scatter3d",color =~type,size=0.2) 
+```
+
+```{r t-SNE before ML, fig.height=1.5, fig.width=2}
+#t-SNE----------
+library(Rtsne)
+set.seed(142)
+tsne <- Rtsne(D, perplexity = 100,
+              pca=T, pca_scale = T)
+
+tsne3D <- Rtsne(D, perplexity = 100,
+                pca=T, pca_scale = T, dims = 3) 
+
+# #display results of 3D t-SNE # 
+tsne$Y %>% 
+  as.data.frame() %>% 
+  cbind(info[,"type"])%>% 
+  setNames(c("x","y","type"))%>% 
+  filter(type!="PBS") %>% 
+  ggplot(aes(x,y,color=factor(type)))+
+  geom_point(aes(x,y,color=factor(type)),size=0.3)+
+  geom_density_2d(alpha=0.6,bins=8)+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "B16F10"),expand = unit(0, "mm"))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "C2C12"),expand = unit(0, "mm"))+
+  labs(y = "X",
+       x = "Y",
+       color = "Cell line")+
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_rect(fill="white",color="black"),
+        panel.grid=element_blank(),
+        axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=11, face="bold"),
+        axis.title.y = element_text(size=12,face="bold"),
+        axis.title.x = element_text(size=12,face="bold"),
+                legend.position = "bottom")
+
+tsne3D$Y %>% 
+  as.data.frame() %>% 
+  cbind(info[,"type"])%>% 
+  setNames(c("x","y","z","type"))%>% 
+  filter(type!="PBS") %>% 
+  ggplot(aes(x,y,color=factor(type)))+
+  geom_point()+
+  geom_density_2d(bins=8)+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "B16F10"),expand = unit(0, "mm"))+
+  ggforce::geom_mark_ellipse(
+    aes(filter = type == "C2C12"),expand = unit(0, "mm"))+
+  labs(y = "X",
+       x = "Y",
+       color = "Cell line")+
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_rect(fill="white",color="black"),
+        panel.grid=element_blank(),
+        axis.text.x = element_text(size=11, face="bold"),
+        axis.text.y=element_text(size=11, face="bold"),
+        axis.title.y = element_text(size=12,face="bold"),
+        axis.title.x = element_text(size=12,face="bold"))
+
+tsne3D$Y %>% 
+  as.data.frame() %>% 
+  cbind(info[,"type"])%>% 
+  setNames(c("x","y","z","type"))%>% 
+  filter(type!="PBS") %>% 
+  plot_ly(x=~x,y=~y,z=~z, type = "scatter3d",color =~type,size=0.1) 
+
+tsne3D$Y %>% 
+  as.data.frame() %>% 
+  cbind(info[,"testdate"])%>% 
+  setNames(c("x","y","z","testdate"))%>% 
+  plot_ly(x=~x,y=~y,z=~z, type = "scatter3d",color =~testdate,size=0.1)  
+
+# mldata<-cbind(spectra,info[,"type"]) %>% 
+#   setNames(c(colnames(spectra),"type")) %>% 
+#   mutate(type=as.factor(type))
+
+
+```
+
+
+```{r train/test sets}
+########machine learning
+library(caret)
+
+# Create balanced splits of the data
+set.seed(329)
+trainset <- sumdata %>% 
+  filter(type!="PBS") 
+
+trainIndex<-  createDataPartition(trainset$type,p = .75,
+                                  list = FALSE,
+                                  times = 1)
+
+
+
+mldata<-keypca %>% 
+  as.data.frame() %>% 
+  cbind(info[,"type"])%>% 
+  setNames(c(colnames(keypca),"type"))%>% 
+  filter(type!="PBS") %>% 
+  mutate(type=as.factor(type))
+
+dataTrain <- mldata[ trainIndex,]
+dataTest <- mldata[-trainIndex,]
+
+mldata2<-tsne$Y %>% 
+  as.data.frame() %>% 
+  cbind(info[,"type"])%>% 
+  setNames(c("x","y" ,"type"))%>% 
+  filter(type!="PBS") %>% 
+  mutate(type=as.factor(type))
+
+dataTrain2 <- mldata2[ trainIndex,]
+dataTest2 <- mldata2[-trainIndex,] 
+```
+
+
+```{r ML model training}
+####### Parameter tuning--------
+
+#Tenfold cross-validation with five repetitions was used during model construction.
+
+fitControl <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10, 
+  ## repeated 5 times
+  repeats = 5,
+  allowParallel=TRUE)
+
+fitControl2 <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated 5 times
+  repeats = 5,
+  allowParallel=TRUE,
+  search = "random") # !!!! take extremely long
+
+############ Diff models--------
+
+# kNN - k best at 90--------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+#knnGrid <- expand.grid(k = c(5,10,20,30,40,50,60,70,80,90,100))
+
+
+knnFit <- train(type ~ ., data = dataTrain,
+                method = "knn",
+                trControl = fitControl#,
+                #tuneGrid = knnGrid
+)
+
+knnFit2 <- train(type ~ ., data = dataTrain2,
+                 method = "knn",
+                 trControl = fitControl#,
+                 #tuneGrid = knnGrid
+)
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+
+# LDA - no need for grid expansion, dim = 2-----------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+ldaFit <- train(type ~ ., data = dataTrain,
+                method = "lda2",
+                trControl = fitControl)
+
+ldaFit2 <- train(type ~ ., data = dataTrain2,
+                 method = "lda2",
+                 trControl = fitControl)
+stopCluster(cl)
+toc()
+
+# pls-----------------
+tic()
+#plsGrid <- expand.grid(ncomp = c(1,3,5,7,9,11,13,15,17,19))
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+plsFit <- train(type ~ ., data = dataTrain,
+                method = "pls",
+                trControl = fitControl#,
+                #tuneGrid = plsGrid
+)
+
+plsFit2 <- train(type ~ ., data = dataTrain2,
+                 method = "pls",
+                 trControl = fitControl#,
+                 #tuneGrid = plsGrid
+)
+
+stopCluster(cl)
+toc()
+
+
+#install.packages("kernlab")
+
+# gbm------------------------------------------------------------------
+#                      this is taking too long, need to find out these parameters
+# tic()
+# cl <- makeCluster(detectCores())
+# registerDoParallel(cl)
+# gbmGrid2 <- expand.grid(interaction.depth = c(1,5,9,11,15),
+#                         n.trees = c(500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500),
+#                         shrinkage = 0.1,
+#                         n.minobsinnode = 10)
+# 
+# gbmFit2 <- train(type ~ ., data = dataTrain,
+#                  method = "gbm",
+#                  trControl = fitControl,
+#                  tuneGrid = gbmGrid2,
+#                  verbose = FALSE)
+# 
+# stopCluster(cl)
+# toc()
+
+
+# svmlinear-------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+svmFitLin <- train(type ~ ., data = dataTrain,
+                   method = "svmLinear2", # or svmLinear
+                   trControl = fitControl)
+
+svmFitLin2 <- train(type ~ ., data = dataTrain2,
+                    method = "svmLinear2", # or svmLinear
+                    trControl = fitControl)
+
+stopCluster(cl)
+toc()
+
+
+# svmRBF-----------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+svmFitRBF <- train(type ~ ., data = dataTrain,
+                   method = "svmRadialSigma", # or svmRadialWeights
+                   trControl = fitControl)
+
+svmFitRBF2 <- train(type ~ ., data = dataTrain2,
+                    method = "svmRadialSigma", # or svmRadialWeights
+                    trControl = fitControl)
+
+stopCluster(cl)
+toc()
+
+# # xgboost  -----------------------------------slow--------(can't stop within 10min)
+# library(xgboost)
+# 
+# tic()
+# cl <- makeCluster(detectCores())
+# registerDoParallel(cl)
+# xgbFit <- train(type ~ ., data = dataTrain,
+#                 method = "xgbDART",
+#                 trControl = fitControl)
+# stopCluster(cl)
+# registerDoSEQ()
+# toc()
+
+
+# native bayes -------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+nbFit <- train(type ~ ., data = dataTrain,
+               method = "naive_bayes",
+               trControl = fitControl)
+
+nbFit2 <- train(type ~ ., data = dataTrain2,
+                method = "naive_bayes",
+                trControl = fitControl)
+
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+# QDA------------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+qdaFit <- train(type ~ ., data = dataTrain,
+                method = "qda",
+                trControl = fitControl)
+
+qdaFit2 <- train(type ~ ., data = dataTrain2,
+                 method = "qda",
+                 trControl = fitControl)
+
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+# neuralnet--------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+nnetFit <- train(type ~ ., data = dataTrain,
+                 method = "nnet",
+                 trControl = fitControl)
+
+nnetFit2 <- train(type ~ ., data = dataTrain2,
+                  method = "nnet",
+                  trControl = fitControl)
+
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+# random forest---------------
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+rfFit <- train(type ~ ., data = dataTrain,
+               method = "rf",
+               trControl = fitControl)
+
+rfFit2 <- train(type ~ ., data = dataTrain2,
+                method = "rf",
+                trControl = fitControl)
+
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+
+# ANN-----------
+#install.packages("RSNNS")
+#install_keras(tensorflow = "gpu")
+#keras::unserialize_model(object,finalModel$object)
+tic()
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+annFit <- train(type ~ ., data = dataTrain,
+                method = "mlpML",
+                trControl = fitControl)
+
+annFit2 <- train(type ~ ., data = dataTrain2,
+                 method = "mlpML",
+                 trControl = fitControl)
+
+stopCluster(cl)
+registerDoSEQ()
+toc()
+
+###batch processing----------
+# MLtrain<-function(method=method){
+# tic()
+# cl <- makeCluster(detectCores())
+# registerDoParallel(cl)
+# Fit1 <- train(type ~ ., data = dataTrain,
+#                 method =method,
+#                 trControl = fitControl)
+# Fit2 <- train(type ~ ., data = dataTrain2,
+#                 method = method,
+#                 trControl = fitControl) 
+#  stopCluster(cl)
+# registerDoSEQ()
+# toc()
+# list(Fit1,Fit2)
+# }
+# 
+# method<-list("qda","rf")
+# 
+# Fit<-lapply(method,MLtrain)
+
+```
+
+```{r resampling}
+# Plotting the Resampling Profile
+trellis.par.set(caretTheme())
+plot(knnFit)
+densityplot(knnFit)
+resamps <- resamples(list(KNN = knnFit, #nearst neighber --- check
+                          LDA = ldaFit, #linear discriminate
+                          PLS = plsFit, #partial least sqaure
+                          RF = rfFit, # random forest --- check
+                          NB = nbFit, #graidient boost machine
+                          QDA = qdaFit, #gradient boosted decision tree --- check
+                          SVMlin = svmFitLin, # ---check
+                          SVMRBF = svmFitRBF,
+                          NNET=nnetFit,
+                          MLP=annFit
+))
+
+ggplot(knnFit)
+
+resamps <- resamples(list(KNN = knnFit, #nearst neighber --- check
+                          LDA = ldaFit, #linear discriminate
+                          PLS = plsFit, #partial least sqaure
+                          RF = rfFit, # random forest --- check
+                          NB = nbFit, #graidient boost machine
+                          QDA = qdaFit, #gradient boosted decision tree --- check
+                          SVMlin = svmFitLin, # ---check
+                          SVMRBF = svmFitRBF,
+                          NNET=nnetFit,
+                          MLP=annFit
+)) # ---check
+
+resamps2 <- resamples(list(KNN = knnFit2, #nearst neighber --- check
+                           LDA = ldaFit2, #linear discriminate
+                           PLS = plsFit2, #partial least sqaure
+                           RF = rfFit2, # random forest --- check
+                           NB = nbFit2, #graidient boost machine
+                           QDA = qdaFit2, #gradient boosted decision tree --- check
+                           SVMlin = svmFitLin2, # ---check
+                           SVMRBF = svmFitRBF2,
+                           NNET=nnetFit2,
+                           MLP=annFit2
+))
+
+resamps
+summary(resamps)
+modelCor(resamps) # Models being stacked should have low correlations (<0.75)
+splom(resamps)
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch = 16
+theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.line$lwd <- 2
+trellis.par.set(theme1)
+bwplot(resamps, layout = c(2, 1))
+bwplot(resamps2, layout = c(2, 1))
+
+resamps2
+summary(resamps2)
+modelCor(resamps2) # Models being stacked should have low correlations (<0.75)
+splom(resamps2)
+
+# Predict
+# KNN = knnFit, #nearst neighber --- check
+# LDC = ldaFit, #linear discriminate
+# PLS = plsFit, #partial least sqaure
+# RF = rfFit, # random forest --- check
+# NB = nbFit, #graidient boost machine
+# QDA = qdaFit, #gradient boosted decision tree --- check
+# SVMlin = svmFitLin2, # ---check
+# SVMRBF = svmFitRBF,
+# NNET=nnFit,
+# ANN=annFit)) # ---check
+
+# save(dataTrain, dataTest, file = "data.RData") 
+# saveRDS(knnFit, "knnFit.rds") 
+# saveRDS(gbmFit, "gbmFit.rds") 
+# saveRDS(gbmFit2, "gbmFit2.rds") 
+# saveRDS(plsFit, "plsFit.rds") 
+# saveRDS(ldaFit, "ldaFit.rds") 
+# saveRDS(svmFitLin, "svmFitLin.rds") 
+# saveRDS(svmFitRBF, "svmFitRBF.rds") 
+# saveRDS(rfFit, "rfFit.rds") 
+# saveRDS(xgbFit, "xgbFit.rds") 
+# knnFit <- readRDS("knnFit.rds") 
+# ldaFit <- readRDS("ldaFit.rds") 
+# gbmFit <- readRDS("gbmFit.rds") 
+# gbmFit2 <- readRDS("gbmFit2.rds") 
+# plsFit <- readRDS("plsFit.rds") 
+# svmFitLin <- readRDS("svmFitLin.rds") 
+# svmFitRBF <- readRDS("svmFitRBF.rds") 
+
+```
+
+```{r ML model predict, fig.height=3.1, fig.width=2.1}
+KNNPred <- predict(knnFit, dataTest)
+LDAPred <- predict(ldaFit, dataTest)
+PLSPred <- predict(plsFit, dataTest)
+RFPred <- predict(rfFit, dataTest)
+NBPred <- predict(nbFit, dataTest)
+QDAPred <- predict(qdaFit, dataTest)
+SVMLinPred <- predict(svmFitLin, dataTest)
+SVMRBFPred <- predict(svmFitRBF, dataTest)
+NNETPred <- predict(nnetFit, dataTest)
+MLPPred <- predict(annFit, dataTest)
+
+KNNPred2 <- predict(knnFit2, dataTest2)
+LDAPred2 <- predict(ldaFit2, dataTest2)
+PLSPred2 <- predict(plsFit2, dataTest2)
+RFPred2 <- predict(rfFit2, dataTest2)
+NBPred2 <- predict(nbFit2, dataTest2)
+QDAPred2 <- predict(qdaFit2, dataTest2)
+SVMLinPred2 <- predict(svmFitLin2, dataTest2)
+SVMRBFPred2 <- predict(svmFitRBF2, dataTest2)
+NNETPred2 <- predict(nnetFit2, dataTest2)
+MLPPred2 <- predict(annFit2, dataTest2)
+
+
+
+extract<-function(matrix=conf){
+  a<-as.data.frame(matrix$overall["Accuracy"]) %>% setNames("ML")
+  b<-as.data.frame(matrix$byClass[c("Sensitivity","Specificity")]) %>% setNames("ML")
+  c<-rbind(a,b) 
+}
+
+
+
+sumPred <- data.frame(KNNPred, 
+                      LDAPred, 
+                      PLSPred,
+                      RFPred,
+                      NBPred, 
+                      QDAPred, 
+                      SVMLinPred, 
+                      SVMRBFPred, 
+                      NNETPred,
+                      MLPPred)
+
+conf<-lapply(sumPred,confusionMatrix,reference=dataTest$type)
+
+keyconf<-lapply(conf,extract)%>% 
+  as.data.frame()%>% 
+  setNames(colnames(sumPred))%>% 
+  rownames_to_column("param") %>% 
+  gather("MLmethod","value",-param) %>% 
+  mutate(dimred="PCA")
+
+
+
+sumPred2 <- data.frame(knnPred2, 
+                       LDAPred2, 
+                       PLSPred2,
+                       RFPred2,
+                       NBPred2,
+                       QDAPred,
+                       SVMLinPred2, 
+                       SVMRBFPred2,
+                       NNETPred2,
+                       MLPPred2)
+
+conf2<-lapply(sumPred2,confusionMatrix,reference=dataTest$type)
+
+keyconf2<-lapply(conf2,extract)%>% 
+  as.data.frame()%>% 
+  setNames(colnames(sumPred)) %>% 
+  rownames_to_column("param") %>% 
+  gather("MLmethod","value",-param) %>% 
+  mutate(dimred="t-SNE")
+
+
+sumconf<-rbind(keyconf,keyconf2)
+
+table<-sumconf %>% 
+  mutate(value = format(round(value*100, 2), nsmall = 2)) %>% 
+  spread(param,value) %>% 
+   mutate(MLmethod=str_remove(MLmethod,"Pred") )
+  
+write.csv(table, "E:\\R processed data\\1-19 confusion table.csv")
+
+sumconf %>% 
+  filter(param=="Accuracy") %>% 
+  mutate(MLmethod=str_remove(MLmethod,"Pred") ) %>% 
+  ggplot(aes(MLmethod,value,fill=dimred))+
+  geom_bar(aes(group=param),stat="identity", position=position_dodge())+
+  geom_text(aes(label=round(value,digits = 4)), 
+            position = position_dodge(0.9),
+            vjust=0,hjust=-0.2, size=3,angle = 0)+
+  facet_grid(dimred~.)+
+  #coord_cartesian(ylim=c(4,1.2))+
+  labs(x = "Machine learning methods",
+       y = "Accuracy",
+       fill = "Dimension reduction method")+
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_rect(fill="white",color="black"),
+        panel.grid=element_blank(),
+        axis.text.x = element_text(size=11),
+        axis.text.y=element_text(size=11),
+        axis.title.y = element_text(size=12,face="bold"),
+        axis.title.x = element_text(size=12,face="bold"),
+        legend.position = "bottom")+
+  coord_flip(ylim=c(0.58,1.0))
+
+
+# Stacking
+# Stack the predictions from multiple models
+# stackPred <- data.frame(knnPred, ldaPred, plsPred,
+#                         rfPred,
+#                         nbPred, 
+#                         qdaPred,
+#                         svmLinPred, svmRBFPred, 
+#                         nnetPred,
+#                         annPred,
+#                         class = dataTest$type)
+# 
+# stackPred2 <- data.frame(knnPred2, ldaPred2, plsPred2,
+#                         rfPred2,
+#                         nbPred2, 
+#                         qdaPred,
+#                         svmPred2, svmPred2, 
+#                         nnetPred2,
+#                         annPred2,
+#                         class = dataTest$type)
+
+# #Apply GBM to the stacked predictions----------don't understand the point
+# tic()
+# cl <- makeCluster(detectCores())
+# registerDoParallel(cl)
+# 
+# stackgbmFit <- caret::train(class ~ ., data = stackPred,
+#                             method = "gbm",
+#                             trControl = fitControl)
+# 
+# stackgbmFit2 <- caret::train(class ~ ., data = stackPred2,
+#                             method = "gbm",
+#                             trControl = fitControl)
+# 
+# stopCluster(cl)
+# toc()
+# 
+# # Performance of the stacked model
+# stackgbmPred <- predict(stackgbmFit, stackPred[,-grep("class",colnames(stackPred))])
+#  caret::confusionMatrix(data = stackgbmPred, reference = stackPred[,grep("class",colnames(stackPred))])
+#  
+# stackgbmPred2 <- predict(stackgbmFit2, stackPred2[,-grep("class",colnames(stackPred2))])
+#  caret::confusionMatrix(data = stackgbmPred2, reference = stackPred2[,grep("class",colnames(stackPred2))]) 
+```
+
