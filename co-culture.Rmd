@@ -1,0 +1,693 @@
+# Raman image processing of Raman dataset from mixed cells. 
+
+```{r read data}
+library(tidyverse)
+library(plyr)
+library(e1071)
+library(rpart)
+library(plotly)
+library(tidyr)
+library(dplyr)
+library(baseline)
+library(reshape)
+
+
+path<-"E:\\past work\\8-24\\test"
+getnm <- list.files(path = path)
+class<-getnm %>% 
+  as.data.frame() %>% 
+  tidyr::separate(col=".",
+                  c("experiment"),
+                  "_Copy.",extra = "drop",remove=T) %>% 
+  tidyr::separate(col="experiment",
+                  c("type","scan"),
+                  " ",extra = "drop",remove=F)
+
+setwd(path)
+
+spc<- getnm %>% 
+  lapply(read.delim, header = T,col.names = c("x","y","wave","intensity")) %>% 
+  tibble() %>% 
+  cbind(class) 
+
+spec<-spc%>% 
+  unnest()
+
+speca<-spec %>% 
+  spread(wave,intensity,fill= NA)
+
+data<-speca[,-c(1:5)]
+info<-speca[,c(1:5)]
+wtno<-as.numeric(colnames(data))
+```
+
+
+```{r read data}
+a<-matrix(unlist(data),ncol=ncol(data)) %>% 
+  baseline.modpolyfit(degree = 13, tol = 0.001, rep = 100)
+
+
+bsldata<-a$corrected %>% 
+  as.data.frame()
+
+write.csv(bsldata,"E:\\R processed data\\9-1 co-culture bslcelldata.csv")
+
+# bsldatacells<-a$corrected %>% 
+#   as.data.frame() %>% 
+#   set_names(wtno) %>% 
+#   cbind(info) %>% 
+#   mutate(cord=paste(x,y,sep=",")) %>% 
+#   mutate(group=ifelse(cord%in%svm$cord,"cell","buffer"))
+
+#write.csv(bsldatacells,"E:\\R processed data\\8-30 bslcelldataset2.csv")
+
+```
+
+```{r clustering}
+test<-"mix 3"
+
+bsldata1<-a$corrected %>% 
+  as.data.frame() %>% 
+  cbind(info) %>% 
+  filter(experiment==test) %>% 
+  select(-c(x,y,experiment,type,scan))
+
+dist0<-bsldata1%>% 
+  dist()
+
+dendrogram0 <- hclust (dist0, method = "ward.D")
+```
+
+```{r no PCA clustering}
+nk<-8
+bsldata1$clusters <- as.factor (cutree (dendrogram0, k = nk))
+
+library(plotly)
+
+data %>% 
+  as.data.frame() %>% 
+  cbind(info)%>% 
+  filter(experiment==test) %>%   
+  mutate(cluster=bsldata1$clusters,experiment=as.factor(experiment))%>% 
+  plot_ly(x=~x,y=~y,z=~as.numeric(cluster), type = "contour"  ,
+          line = list(width = 0.05),
+          contours = list(end = nk, 
+                          size = 1, 
+                          start = 1),
+          colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+```
+
+
+```{r pca clustering}
+
+PCA <- princomp(bsldata) #nfile=360, the last column c361 is the wtno
+
+eigen<- loadings(PCA)[]
+scores<-  as.matrix(as.data.frame(PCA$scores))
+center<-PCA$center
+scale<-PCA$scale
+sdev<-PCA$sdev
+
+
+dist0 <- dist (scores[,c(1:17)])
+dendrogram0 <- hclust (dist0, method = "ward.D")
+
+
+nk<-5
+clusters <- as.factor (cutree (dendrogram0, k = nk))
+# 
+info %>%
+  mutate(cluster=clusters,experiment=as.factor(experiment)) %>%
+    filter(experiment=="mix 5") %>%
+  plot_ly(x=~x,y=~y,z=~as.numeric(cluster), type = "contour"  ,
+          line = list(width = 0.05),
+          contours = list(end = nk,
+                          size = 1,
+                          start = 1),
+          colorscale = 'Jet'
+  ) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+
+# bsldatacells<-a$corrected %>% 
+#   as.data.frame() %>% 
+#   set_names(wtno) %>% 
+#   cbind(info) %>% 
+#   mutate(cord=paste(x,y,sep=",")) %>% 
+#   mutate(group=ifelse(cord%in%svm$cord,"cell","buffer"))
+
+scores %>%
+  as.data.frame() %>% 
+  cbind(info)%>% 
+  mutate(cluster=clusters) %>% 
+#   mutate(cord=paste(x,y,sep=",")) %>% 
+#   mutate(group=ifelse(cord%in%svm$cord,type,paste0(type,"buffer")))%>% 
+# #  filter(type=="cell2") %>%
+#   select(c(1:15),cluster,type,group) %>%
+  # ggplot()+
+  # geom_density2d(aes(x=Comp.1,y=Comp.2,color=group))
+
+plot_ly(x = ~Comp.1, y = ~Comp.2,
+        z = ~Comp.3,
+        color=~as.factor(cluster),
+        size=0.05
+##         size = ~as.numeric(as.factor(type))
+         )
+
+
+```
+
+```{r Sum PCs, echo=TRUE}
+plotPC<-function(npc=npc){
+  #FIND THE OBSERVATION WITH THE HIGHEST INTENSITY
+  obs<-  scores[,npc] %>% 
+    as.data.frame() %>% 
+    set_names(c("Int")) %>% 
+    mutate(obs=seq(1:nrow(scores)))%>% 
+    filter(Int==ifelse(abs(max(Int))>abs(min(Int)),max(Int),min(Int))) %>% 
+    select(obs) %>% 
+    as.numeric()
+  
+  p<-as.data.frame(scores[obs,c(1:npc)]%*% t(eigen[,c(1:npc)])) %>% 
+    t() %>% as.data.frame() %>% 
+    cbind(wtno) %>% 
+    set_names(c("pc","wtno")) %>% 
+    ggplot()+
+    geom_line(aes(wtno,pc))+ #with/without center
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Raman shift ",
+         y="Intensity")
+  ggplotly(p)
+}
+
+
+lapply(c(1:25),plotPC)
+
+```
+
+
+```{r Single PC, echo=TRUE}
+plotPC<-function(npc=npc){
+  obs<-  scores[,npc] %>% 
+    as.data.frame() %>% 
+    set_names(c("Int")) %>% 
+    mutate(obs=seq(1:nrow(scores)))%>% 
+    filter(Int==ifelse(abs(max(Int))>abs(min(Int)),max(Int),min(Int))) %>% 
+    select(obs) %>% 
+    as.numeric()
+  
+  as.data.frame(scores[obs,c(npc)]%*% t(eigen[,c(npc)])) %>% 
+    t() %>% as.data.frame() %>% 
+    cbind(wtno) %>% 
+    set_names(c("pc","wtno")) %>% 
+    ggplot()+
+    geom_line(aes(wtno,pc))+
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x=expression(paste("Raman shift ", (cm^-1))),
+         y="Intensity")
+}
+
+
+lapply(c(1:25),plotPC)
+
+```
+
+```{r PC loading}
+
+df <- (PCA$sdev)^2 %>% as.data.frame() %>% 
+  setNames("SD") %>% 
+  transmute(Weight = SD/sum((PCA$sdev)^2)*100) %>% 
+  cbind(seq(1:length(sdev))) %>% 
+  setNames(c("Weight","PC")); df
+
+df %>% 
+  head(25) %>% 
+  ggplot() + 
+  geom_line(aes(PC,Weight),linetype="longdash",color='#999999')+
+  geom_point(aes(PC,Weight),size=2.5)+
+  theme_bw()
+
+
+```
+```{r reconstructed dataset}
+ncomp<-3
+denoise<-as.data.frame(scores[,c(1:ncomp)]%*% t(eigen[,c(1:ncomp)]))
+
+#with center
+#D<-denoise+center
+
+#without center
+D<-denoise + center[col(denoise)]
+
+colnames(D)<- wtno
+
+pmap<-cbind(info,(D[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+            (D[,which((wtno>=919)&(wtno<=920))]),
+            (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (D[,which((wtno>=1128)&(wtno<=1129))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+colnames(bsldata)<- wtno
+origin<-bsldata %>% cbind(info) %>% 
+  setNames(c(wtno,"x","y","experiment","type","scan"))
+```
+
+```{r pca reconstructed peak images}
+
+test<-"mix 2"
+#cell1 1: 68
+#cell1 2: 65
+#cell2 1: 60
+#cell2 2: 55
+#cell2 3: 60
+pmap %>% filter(experiment==test) %>% #nuclear
+#  mutate(mp1=ifelse(p1>=60,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour", 
+          line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = TRUE),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"))
+
+
+# pmap %>% filter(experiment==test) %>% 
+#   plot_ly(x=~x,y=~y,z=~p2, type = "contour", 
+#                     line = list(width = 0.05),
+#          contours = list(coloring = 'heatmap'),
+#           # zmax = 500,
+#           # zmin = 0 
+#             colorscale = 'Jet'
+#   ) %>% 
+#   layout(autosize = F,
+#          yaxis = list(
+#            scaleanchor = "x"))
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+#     mutate(mp3=ifelse(p3>=60,p1,0)) %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",  
+                    line = list(width = 0.05),
+         contours = list(coloring = 'heatmap',showlabels = TRUE),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+# pmap %>% filter(experiment==test) %>% 
+#   plot_ly(x=~x,y=~y,z=~p4, type = "contour",  
+#                     line = list(width = 0.05),
+#           contours = list(coloring = 'heatmap'),
+#           # zmax = 500,
+#           # zmin = 0 
+#             colorscale = 'Jet'
+#   ) %>% 
+#   layout(autosize = F,
+#          yaxis = list(
+#            scaleanchor = "x"))
+
+orca(fig,paste0("orgin no bsl nuclear map of ",test),format = "png")
+```
+
+
+```{r origin peak images}
+
+
+library(RColorBrewer)
+coul <- colorRampPalette(rev(brewer.pal(10,"Spectral")))
+
+orimap<-cbind(info,
+              (speca[,ncol(info)+which((wtno>=749)&(wtno<=750))]),
+              (speca[,ncol(info)+which((wtno>=919)&(wtno<=920))]),
+              (speca[,ncol(info)+which((wtno>=1003)&(wtno<=1004))]),
+              (speca[,ncol(info)+which((wtno>=1128)&(wtno<=1129))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+library(plotly)
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p2, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+```
+
+```{r pc score images, echo=TRUE}
+
+library(plotly)
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.1, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+# scores %>% cbind(cord) %>% 
+# filter(group==1) %>% 
+# ggplot(aes(x,y,z=Comp.1))+
+#   geom_contour(color = "white", alpha = 0.5)
+# install.packages("orca")
+
+
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.2, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+
+scores %>% cbind(info) %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.9, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet'
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+#orca(fig, "surface-plot.png",format = "png")
+```
+```{r}
+path<-"E:\\8-24\\mix\\prediction"
+getnm <- list.files(path = path)
+class<-getnm %>% 
+  as.data.frame() %>% 
+  tidyr::separate(col=".",
+                  c("algorithm"),
+                  ".csv",extra = "drop",remove=T)
+setwd(path)
+  pred<- getnm %>% 
+    lapply(read.csv, header = TRUE,col.names = c("sample","pred")) %>% 
+    as.data.frame() %>% 
+    select(seq(2,2*length(getnm),2)) %>% 
+    set_names(class$algorithm) %>% 
+    cbind(info)
+
+```
+
+```{r}
+test<-"mix 3"  
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_AdaBoost`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Decision Tree`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Linear SVM`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Naive Bayes`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Nearest Neighbors`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Neural Net`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_QDA`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_Random Forest`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`0_RBF SVM`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+```
+
+```{r}
+test<-"mix 2"  
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_AdaBoost`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Decision Tree`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Linear SVM`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Naive Bayes`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Nearest Neighbors`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Neural Net`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_QDA`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_Random Forest`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+pred %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~`1_RBF SVM`, type = "contour",  
+          line = list(width = 0.05),
+#         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Jet') %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+```
+

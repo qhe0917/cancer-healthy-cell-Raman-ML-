@@ -1,0 +1,343 @@
+# Baseline correction, 
+
+```{r read data}
+library(tidyverse)
+library(plyr)
+library(e1071)
+library(rpart)
+library(plotly)
+library(tidyr)
+library(dplyr)
+library(baseline)
+library(reshape)
+```
+
+```{r}
+
+
+path<-"E:\\past work\\8-24\\train"
+
+getnm <- list.files(path = path)
+
+########### DEFINE THE COLUMNS BASED ON THE FILE NAMES ###############
+class<-getnm %>% 
+  as.data.frame() %>% 
+  tidyr::separate(col=".",
+                  c("experiment"),
+                  "_Copy.",extra = "drop",remove=T) %>% 
+  tidyr::separate(col="experiment",
+                  c("type","scan"),
+                  " ",extra = "drop",remove=F)
+
+setwd(path)
+
+spc<- getnm %>% 
+  lapply(read.delim, header = T,col.names = c("x","y","wave","intensity")) %>% 
+  tibble() %>% 
+  cbind(class) 
+
+spec<-spc%>% 
+  unnest()
+
+speca<-spec %>% 
+  spread(wave,intensity,fill= NA)
+
+########### 4(names)-2(wave, intensity) +ncol(class)=5 ###############
+data<-speca[,-c(1:5)] 
+
+info<-speca[,c(1:5)]
+wtno<-as.numeric(colnames(data))
+
+
+########### MODIFY THE BASELINE CORRECTION PARAMETERS HERE ###############
+a<-matrix(unlist(data),ncol=ncol(data)) %>% 
+  baseline.modpolyfit(degree = 13, tol = 0.001, rep = 100)
+
+
+
+bsldata<-a$corrected %>% 
+  as.data.frame()
+
+#####area normalization
+#bsldata<-as.data.frame(diag(1/apply(bsldata,1,sum)) %*% as.matrix(bsldata))
+
+#svm<-read.csv("E:\\R processed data\\10-18 training cell only.csv") 
+svm<-read.csv("E:\\past work\\R processed data\\10-16 BSLC-training.csv") 
+
+svm<-svm %>% 
+  select(-1)
+
+svm$cord
+
+bsldatacells<-a$corrected %>%
+  as.data.frame() %>%
+  set_names(wtno) %>%
+  cbind(info) %>%
+  mutate(cord=paste(x,y,sep=",")) %>%
+  mutate(group=ifelse(cord%in%svm$cord,type,"buffer")) %>% 
+  mutate(testdate=ifelse(type=="cell1","day1","day2"))
+
+unique(bsldatacells$group)
+
+  
+write.csv(bsldatacells,paste("E:\\R processed data\\",Sys.Date(),"BSLC-training.csv"), row.names = FALSE)
+
+```
+
+```{r test BSLC & labeling}
+
+
+path<-"E:\\8-24\\test"
+
+getnm <- list.files(path = path)
+
+########### DEFINE THE COLUMNS BASED ON THE FILE NAMES ###############
+class<-getnm %>% 
+  as.data.frame() %>% 
+  tidyr::separate(col=".",
+                  c("experiment"),
+                  "_Copy.",extra = "drop",remove=T) %>% 
+  tidyr::separate(col="experiment",
+                  c("type","scan"),
+                  " ",extra = "drop",remove=F)
+
+setwd(path)
+
+spc<- getnm %>% 
+  lapply(read.delim, header = T,col.names = c("x","y","wave","intensity")) %>% 
+  tibble() %>% 
+  cbind(class) 
+
+spec<-spc%>% 
+  unnest()
+
+speca<-spec %>% 
+  spread(wave,intensity,fill= NA)
+
+########### 4(names)-2(wave, intensity) +ncol(class)=5 ###############
+data<-speca[,-c(1:5)] 
+
+info<-speca[,c(1:5)]
+wtno<-as.numeric(colnames(data))
+
+
+########### MODIFY THE BASELINE CORRECTION PARAMETERS HERE ###############
+a<-matrix(unlist(data),ncol=ncol(data)) %>% 
+  baseline.modpolyfit(degree = 13, tol = 0.001, rep = 100)
+
+
+
+bsldata<-a$corrected %>% 
+  as.data.frame() %>% 
+  set_names(wtno) %>%
+  cbind(info) %>%
+  mutate(cord=paste(x,y,sep=",")) %>% 
+  mutate(testdate=ifelse(type=="test-cell1","day3","day2"))
+
+
+unique(bsldata$testdate)
+
+  
+write.csv(bsldata,paste("E:\\R processed data\\10-16 BSLC-predicting.csv"), row.names = FALSE)
+
+```
+
+```{r}
+PCA <- princomp(bsldata) #nfile=360, the last column c361 is the wtno
+
+eigen<- loadings(PCA)[]
+scores<-  as.matrix(as.data.frame(PCA$scores))
+center<-PCA$center
+scale<-PCA$scale
+sdev<-PCA$sdev
+
+```
+
+```{r reconstructed spectra}
+test<-"cell1 1"
+
+ncp<-17
+denoise<-as.data.frame(scores[,c(1:ncp)]%*% t(eigen[,c(1:ncp)]))
+D<-denoise + center[col(denoise)]
+
+
+pmap<-cbind(info,(D[,which((wtno>=1580)&(wtno<=1581))]),#nuclear acid
+            (D[,which((wtno>=1584)&(wtno<=1585))]),
+            (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (D[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+  set_names(c(colnames(info),"p1","p2","p3","p4"))
+
+pmap %>% filter(experiment==test)%>% #nuclear
+  # mutate(mp1=ifelse(p1>=60,p1,0)) %>% 
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour", 
+          line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = F),
+           zmax = 100,
+           zmin = 50,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+#orca(fig,paste0("reconstructed nuclear map of ",test),format = "png")
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = F),
+          zmax = 120,
+          zmin = 60,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+#orca(fig,paste0("reconstructed protein map of ",test),format = "png")
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = F),
+           zmax = 100,
+           zmin = 50,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+```
+
+
+```{r reconstructed spectra}
+test<-"test-cell2 2"
+
+ncp<-3
+denoise<-as.data.frame(scores[,c(1:ncp)]%*% t(eigen[,c(1:ncp)]))
+D<-denoise + center[col(denoise)]
+
+```
+
+```{r}
+pmap<-cbind(info,(D[,which((wtno>=751)&(wtno<=752))]),#nuclear acid
+            (D[,which((wtno>=1584)&(wtno<=1585))]),
+            (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (D[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+fig<-pmap %>% filter(experiment==test) %>% #nuclear
+ # mutate(p1=ifelse(p1>=40,p1,0)) %>% 
+  plot_ly(x=~x,y=~y,z=~p4, type = "heatmap",
+                    line = list(width = 0.05),
+ # #        contours = list(coloring ='heatmap',showlabels = F),
+ #          zmax = 80,
+ #          zmin = 40,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+#orca(fig,paste0("reconstructed nuclear map of ",test),format = "png")
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+     # mutate(p3=ifelse(p3>=45,p3,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p4, type = "heatmap",
+                    line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = F),
+          # zmax = 70,
+          # zmin = 45,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+#orca(fig,paste0("reconstructed protein map of ",test),format = "png")
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+     # mutate(p4=ifelse(p4>=40,p4,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p4, type = "heatmap",
+                    line = list(width = 0.05),
+ #        contours = list(coloring ='heatmap',showlabels = F),
+           # zmax = 70,
+           # zmin = 40,
+            colorscale = 'Jet'
+         )%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+```
+```{r}
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~(-Comp.3+Comp.2), type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+           zmax = 300,
+           zmin = 30,
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+```
+```{r}
+test<-"test-cell2 2"
+
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~(Comp.2-2*Comp.3), type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+           zmax = 300,
+           zmin = -30,
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+```
+```{r}
+
+training<- read.delim(file="E:\\R processed data\\9-27 training bslcelldataset2.csv",
+                      sep=",") 
+
+```
+
+
+```{r}
+dataset1<-read.csv("E:\\past work\\R processed data\\8-29+bslcelldataset2.csv") 
+
+dataset2<-read.csv("E:\\R processed data\\8-29 celldataset.csv") 
+
+dataset1 %>% 
+  colnames() %>% 
+  tail(7)
+
+cellonly<-dataset1 %>% 
+  filter(group=="cell") 
+  dim(cellonly)
+
+write.csv(cellonly,paste("E:\\R processed data\\10-18 training cell only.csv"), row.names = FALSE)
+
+unique(bsldatacells)
+
+
+unique(dataset1$experiment)
+
+
+
+dataset1 %>% 
+  filter(experiment=="cell2 1") %>% 
+  select(x,y,group) %>% 
+  mutate(group=as.numeric(as.factor(group))) %>% 
+  plot_ly(x=~x,y=~y,z=~group, type = "contour") %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+  
+
+```

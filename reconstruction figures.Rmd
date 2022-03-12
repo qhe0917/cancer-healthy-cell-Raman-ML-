@@ -1,0 +1,896 @@
+
+
+
+```{r read data}
+library(tidyverse)
+library(plyr)
+library(e1071)
+library(rpart)
+library(plotly)
+library(tidyr)
+library(dplyr)
+library(baseline)
+library(reshape)
+```
+
+```{r data read in}
+#########read dataset(already baseline corrected)
+path<-"D:\\documents sd\\g drive\\dataset\\10-15 BSLC-training (1).csv"
+dataset<-read.csv(path)
+
+colndata<-colnames(dataset) %>% 
+  str_remove("X") 
+
+colnames(dataset)<-colndata
+
+info<-dataset %>% 
+  select(last_col(c(1:7)))
+
+spectra<-dataset %>% 
+  select(c(1:(ncol(dataset)-6))) 
+
+wtno<-colnames(spectra) %>% 
+  as.numeric()
+
+```
+
+```{r}
+PCA <- princomp(spectra) #nfile=360, the last column c361 is the wtno
+
+eigen<- loadings(PCA)[]
+scores<-  as.matrix(as.data.frame(PCA$scores))
+center<-PCA$center
+scale<-PCA$scale
+sdev<-PCA$sdev
+
+```
+
+```{r Sum PCs, echo=TRUE}
+plotPC<-function(npc=npc){
+  #FIND THE OBSERVATION WITH THE HIGHEST INTENSITY
+  obs<-  scores[,npc] %>% 
+    as.data.frame() %>% 
+    set_names(c("Int")) %>% 
+    mutate(obs=seq(1:nrow(scores)))%>% 
+    filter(Int==ifelse(abs(max(Int))>abs(min(Int)),max(Int),min(Int))) %>% 
+    select(obs) %>% 
+    as.numeric()
+  
+  p<-as.data.frame((scores[obs,c(1:npc)]%*% t(eigen[,c(1:npc)])))%>% 
+
+    t() %>% as.data.frame() %>% 
+    cbind(wtno) %>% 
+    set_names(c("pc","wtno")) %>% 
+    ggplot()+
+    geom_line(aes(wtno,pc))+ #with/without center
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Raman shift ",
+         y="Intensity");p
+#  ggplotly(p)
+}
+
+
+lapply(c(1:20),plotPC)
+
+```
+
+
+```{r Single PC, echo=TRUE}
+plotPC<-function(npc=npc){
+  obs<-  scores[,npc] %>% 
+    as.data.frame() %>% 
+    set_names(c("Int")) %>% 
+    mutate(obs=seq(1:nrow(scores)))%>% 
+    filter(Int==ifelse(abs(max(Int))>abs(min(Int)),max(Int),min(Int))) %>% 
+    select(obs) %>% 
+    as.numeric()
+  
+  fig<-as.data.frame(scores[obs,c(npc)]%*% t(eigen[,c(npc)])) %>% 
+    t() %>% as.data.frame() %>% 
+    cbind(wtno) %>% 
+    set_names(c("pc","wtno")) %>% 
+    ggplot()+
+    geom_line(aes(wtno,pc))+
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Wavenumber")+
+      theme(text = element_text(size=30),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank());fig
+ 
+   #orca(fig,file=paste0(npc,"pca.png"),format = "png")
+  
+  
+}
+
+
+lapply(c(1:25),plotPC)
+
+```
+
+
+
+
+```{r PC loading}
+
+df <- (PCA$sdev)^2 %>% as.data.frame() %>% 
+  setNames("SD") %>% 
+  transmute(Weight = SD/sum((PCA$sdev)^2)*100) %>% 
+  cbind(seq(1:length(sdev))) %>% 
+  setNames(c("Weight","PC")); df
+
+fig<-df %>% 
+  head(25) %>% 
+  ggplot() + 
+  geom_line(aes(PC,Weight),linetype="longdash",color='#999999')+
+  geom_point(aes(PC,Weight),size=2)+
+  geom_vline(xintercept =17,linetype="longdash",color="red")+
+  theme_bw()+
+  theme(text = element_text(size=25));fig
+
+
+
+```
+
+```{r reconstructed spectra}
+test<-"cell1 1"
+npc<-17
+  
+p<-as.data.frame(scores[,c(1:npc)]%*% t(eigen[,c(1:npc)])) #+ center[col(denoise)]
+
+
+fig<-p %>%
+    mutate(peak=p[,which((wtno>=1003)&(wtno<=1004))]) %>%
+  cbind(info) %>%
+    set_names(c(wtno,"peak",colnames(info)))%>%
+    filter(experiment==test)%>%
+    filter(peak==max(peak))%>%
+  gather("wtno","intensity",-c(peak,colnames(info))) %>%
+  mutate(wtno=as.numeric(wtno))%>% 
+    ggplot()+
+    geom_line(aes(wtno,intensity+center))+ #with/without center
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Raman shift ",
+         y="Intensity");fig
+orca(fig,"reconstructed cell spectrum",format = "png")
+
+fig<-p %>% 
+    mutate(peak=p[,which((wtno>=1003)&(wtno<=1004))]) %>% 
+  cbind(info) %>% 
+    set_names(c(wtno,"peak",colnames(info)))%>% 
+    filter(experiment==test)%>% 
+    filter(peak==min(peak))%>% 
+  gather("wtno","intensity",-c(peak,colnames(info))) %>% 
+  mutate(wtno=as.numeric(wtno))%>% 
+    ggplot()+
+    geom_line(aes(wtno,intensity+center))+ #with/without center
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Raman shift ",
+         y="Intensity");fig
+orca(fig,"reconstructed buffer spectrum",format = "png")
+#  ggplotly(p)
+
+test<-"cell2 1"
+fig<-p %>%
+    mutate(peak=p[,which((wtno>=1003)&(wtno<=1004))]) %>%
+  cbind(info) %>%
+    set_names(c(wtno,"peak",colnames(info)))%>%
+    filter(experiment==test)%>%
+    filter(peak==max(peak))%>%
+  gather("wtno","intensity",-c(peak,colnames(info))) %>%
+  mutate(wtno=as.numeric(wtno))%>% 
+    ggplot()+
+    geom_line(aes(wtno,intensity+center))+ #with/without center
+    ggtitle(npc)+
+    theme_bw()+
+    labs(title=paste("PC",npc,sep = " "),
+         x="Raman shift ",
+         y="Intensity");fig
+ggplotly(fig)
+orca(fig,"reconstructed cell2 spectrum",format = "png")
+```
+
+by removing the center, the peak intensity begin to be correlated to the cell distributions for all scanned samples. 
+the peak collected from pc1 (919cm-1) is related to the buffer.
+```{r reconstructed dataset}
+
+ncomp<-17
+denoise<-as.data.frame(scores[,c(1:ncomp)]%*% t(eigen[,c(1:ncomp)]))
+
+#with center
+D<-denoise + center[col(denoise)]
+
+# #without center
+# D<-denoise
+d<-matrix(unlist(D),ncol=ncol(D)) %>% 
+  baseline.modpolyfit(degree = 3, tol = 0.001, rep = 100)
+d1<-d$corrected
+colnames(d1)<- wtno
+
+pmap<-cbind(info,(d1[,which((wtno>=751)&(wtno<=752))]),#nuclear acid
+            (d1[,which((wtno>=1584)&(wtno<=1585))]),
+            (d1[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (d1[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+  set_names(c(colnames(info),"p1","p2","p3","p4"))
+
+# colnames(D)<- wtno
+# 
+# pmap<-cbind(info,(D[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+#             (D[,which((wtno>=1248)&(wtno<=1249))]),
+#             (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+#             (D[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+#   set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+colnames(bsldata)<- wtno
+origin<-bsldata %>% cbind(info) %>% 
+  setNames(c(wtno,"x","y","experiment","type","scan"))
+```
+
+
+
+```{r pca reconstructed peak images}
+
+test<-"cell1 1"
+#cell1 1: 68
+#cell1 2: 65
+#cell2 1: 60
+#cell2 2: 55
+#cell2 3: 60
+
+pmap %>% filter(experiment==test) %>% 
+  dim()
+
+fig<-pmap %>% filter(experiment==test) %>% #nuclear
+  # mutate(mp1=ifelse(p1>=60,p1,0)) %>% 
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour", 
+          line = list(width = 0.05),
+         contours = list(coloring ='heatmap',showlabels = F),
+          zmax = 160,
+          zmin = 80,
+            colorscale = 'Greys',reversescale=F)%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+fig<-pmap %>% filter(experiment==test) %>%
+  plot_ly(x=~x,y=~y,z=~p2, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0
+            colorscale = 'Greys',reversescale=T)%>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring = 'heatmap',showlabels = F),
+          zmax = 150,
+          zmin = 80,
+            colorscale = 'Greys',reversescale=F)%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring = 'heatmap',showlabels = F),
+           zmax = 100,
+           zmin = 65,
+            colorscale = 'Greys',reversescale=F)%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+```
+
+```{r pca reconstructed peak images}
+
+test<-"cell1 1"
+#cell1 1: 68
+#cell1 2: 65
+#cell2 1: 60
+#cell2 2: 55
+#cell2 3: 60
+testpmap<-pmap %>% filter(experiment==test)
+
+fig<-pmap %>% filter(experiment==test) %>% #nuclear
+  # mutate(mp1=ifelse(p1>=60,p1,0)) %>% 
+# plot_ly(x=~x,y=~y,z=~p1, type = "heatmap",
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour",
+          line = list(width = 0.05,smoothing = 0.85), 
+         contours = list(coloring ='heatmap',showlabels = F),
+           zmax = 110,
+           zmin = 35,
+            colorscale = 'Greys',reversescale=F)%>% 
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+# plot_ly(x=~x,y=~y,z=~p3, type = "heatmap",
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05,smoothing = 0.85),
+         contours = list(coloring = 'heatmap',showlabels = F),
+          zmax = 120,
+          zmin = 30,
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+
+fig<-pmap %>% filter(experiment==test) %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+# plot_ly(x=~x,y=~y,z=~p4, type = "heatmap",
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",
+                    line = list(width = 0.05,smoothing = 0.85),
+         contours = list(coloring = 'heatmap',showlabels = F),
+          zmax = 90,
+          zmin = 25,
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+
+
+```
+
+```{r process}
+####nucleic acid
+#pca reconstructed spectra
+
+rc<-D %>% 
+  cbind(info)%>% 
+  set_names(wtno,colnames(info)) %>% 
+  mutate(process="reconstructed")
+
+ncomp<-17
+ns<-as.data.frame(scores[,c((ncomp+1):ncol(eigen))]%*% t(eigen[,c((ncomp+1):ncol(eigen))])) %>%
+  as.data.frame()%>% 
+  cbind(info) %>% 
+  set_names(wtno,colnames(info)) %>% 
+  mutate(process="noise")
+  
+bsl<-a$baseline %>% 
+   as.data.frame() %>% 
+  cbind(info) %>% 
+  set_names(wtno,colnames(info)) %>% 
+  mutate(process="basline")
+
+crt<-a$corrected %>% 
+   as.data.frame() %>% 
+  cbind(info) %>% 
+  set_names(wtno,colnames(info)) %>% 
+  mutate(process="corrected")
+
+ori<-data %>% 
+  cbind(info) %>% 
+  set_names(wtno,colnames(info)) %>% 
+  mutate(process="origin")
+
+
+
+sumprocess<-rbind(rc,ns,bsl,crt,ori) 
+
+line<-ori %>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((y<966)&(y>965))%>% 
+  t() %>% 
+  as.data.frame()
+write.csv(line,"E:\\R processed data\\9-17 spec line.csv")
+
+
+nucleic<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((x<=-48)&(x>=-49))%>% 
+  filter((y<966)&(y>965))%>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>% 
+  mutate(process=paste(process,"nucleic",sep="-"))%>% 
+    mutate(wtno=as.numeric(wtno)) %>% 
+  spread(process,intensity) %>% 
+  select(c(6:11))
+
+
+protein<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((x<=-62)&(x>=-63))%>% 
+  filter((y<=998)&(y>=997)) %>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>% 
+  mutate(process=paste(process,"protein",sep="-"))%>% 
+    mutate(wtno=as.numeric(wtno)) %>% 
+  spread(process,intensity) %>% 
+  select(c(7:11))
+
+
+lipid<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((x<=-64)&(x>=-65))%>% 
+  filter((y<=998)&(y>=997)) %>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>% 
+  mutate(process=paste(process,"lipid",sep="-")) %>% 
+    mutate(wtno=as.numeric(wtno)) %>% 
+  spread(process,intensity) %>% 
+  select(c(7:11))
+
+
+
+
+process<-cbind(nucleic,protein,lipid) 
+
+
+write.csv(process,"E:\\R processed data\\9-3 spec process.csv")
+
+# %>% 
+#   ggplot()+
+#   geom_line(aes(wtno,intensity,color=as.factor(process),group=process))+
+#   facet_grid(area~.)
+```
+
+```{r}
+
+raw<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((x<=-48)&(x>=-49))%>%
+  filter((y<966)&(y>965))%>%
+  filter(process=="corrected")%>%
+  gather("wtno","intensity",-c(colnames(info),process)) %>%
+  mutate(wtno=as.numeric(wtno))
+
+p<-raw %>% 
+  ggplot()+
+  geom_line(aes(wtno,intensity))
+  ggplotly(p)
+
+p<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  filter((x<=-48)&(x>=-49))%>% 
+  filter((y<966)&(y>965))%>% 
+  filter(process=="reconstructed") %>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>% 
+  mutate(wtno=as.numeric(wtno)) %>% 
+  ggplot()+
+  geom_line(aes(wtno,intensity))
+  ggplotly(p)
+```
+
+```{r}
+raw<-sumprocess%>% 
+  filter(experiment=="cell1 1") %>% 
+  # filter((x<=-48)&(x>=-49))%>% 
+  # filter((y<966)&(y>965))%>% 
+  filter(process=="corrected")  
+
+ksmth<-function(x){
+  stats::ksmooth(wtno, x, "normal", bandwidth = 10)
+}
+
+ 
+ ks<-apply(raw[,c(1:1022)],1,ksmth) %>% 
+  as.data.frame() %>% 
+  select(seq(2,2*nrow(raw),2)) %>% 
+   t() %>% 
+   as.data.frame() %>% 
+   cbind(raw[,c(1023:ncol(raw))]) %>% 
+   set_names(colnames(sumprocess))
+
+ ksspc<-ks %>% 
+  filter((x<=-48)&(x>=-49))%>% 
+  filter((y<966)&(y>965))%>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>%
+  mutate(wtno=as.numeric(wtno)) 
+ 
+
+ 
+library(pracma)
+ savs<-apply(raw[,c(1:1022)],1,savgol,51, forder = 4, dorder = 0) %>% 
+   as.data.frame() %>% 
+      t() %>% 
+   as.data.frame() %>% 
+   cbind(raw[,c(1023:ncol(raw))]) %>% 
+   set_names(colnames(sumprocess))
+ 
+  savsspc<-savs %>% 
+  filter((x<=-48)&(x>=-49))%>% 
+  filter((y<966)&(y>965))%>% 
+  gather("wtno","intensity",-c(colnames(info),process)) %>%
+  mutate(wtno=as.numeric(wtno))
+  
+  smth<-cbind(ksspc$intensity,savsspc$intensity)%>% 
+    as.data.frame() %>% 
+    set_names(c("kernal","Savitzky"))
+write.csv(smth,"E:\\R processed data\\9-24 smth methods.csv")
+
+
+ ksmap<-cbind(ks[,c(1023:ncol(raw))],
+              (ks[,which((wtno>=751)&(wtno<=752))]),#nuclear acid
+            (ks[,which((wtno>=1584)&(wtno<=1585))]),
+            (ks[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (ks[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+  set_names(c("x","y","experiment","type","scan","process","p1","p2","p3","p4"))
+ 
+
+
+  savsmap<-cbind(savs[,c(1023:ncol(raw))],
+              (savs[,which((wtno>=751)&(wtno<=752))]),#nuclear acid
+            (savs[,which((wtno>=1584)&(wtno<=1585))]),
+            (savs[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (savs[,which((wtno>=1451)&(wtno<=1452))]))%>% 
+  set_names(c("x","y","experiment","type","scan","process","p1","p2","p3","p4"))
+```
+
+```{r}
+fig<-ksmap %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05,smoothing = 0.85),
+         contours = list(coloring = 'heatmap',showlabels = F),
+            colorscale = 'Jet',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+orca(fig,paste0("kernal smoothing p3 ",test),format = "png")
+
+fig<-savsmap %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05,smoothing = 0.85),
+         contours = list(coloring = 'heatmap',showlabels = F),
+            colorscale = 'Jet',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+orca(fig,paste0("kSavitzky-Golay Smoothing p3 ",test),format = "png")
+
+fig<-pmap %>% 
+  filter(experiment=="cell1 1") %>% #protein
+    # mutate(mp3=ifelse(p3>=20,p1,0)) %>%
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",
+                    line = list(width = 0.05),
+         contours = list(coloring = 'heatmap',showlabels = F),
+            colorscale = 'Jet',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+orca(fig,paste0("PCA p3 ",test),format = "png")
+
+orimap<-cbind(info,
+              (bsldata[,which((wtno>=749)&(wtno<=750))]),
+              (bsldata[,which((wtno>=919)&(wtno<=920))]),
+              (bsldata[,which((wtno>=1003)&(wtno<=1004))]),
+              (bsldata[,which((wtno>=1128)&(wtno<=1129))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+
+library(plotly)
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0, 
+            colorscale = 'Jet',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+orca(fig,paste0("bsl p3 ",test),format = "png")
+
+
+
+```
+
+```{r mean spec}
+
+
+meanspec<-spectra %>% 
+  cbind(info)%>% 
+  gather("wtno","intensity",-c(colnames(info))) %>%
+  group_by(group,wtno) %>% 
+  summarise(mean=mean(intensity),sd=sd(intensity))%>% 
+#  mutate(mean=mean/max(mean)) %>% 
+  mutate(wtno=as.numeric(wtno))%>% 
+#  filter(group=="buffer") %>% 
+  ungroup()
+
+meanspec%>% 
+  ggplot()+
+  geom_line(aes(wtno,mean,group=group,color=group))
+
+write.csv(meanspec,"E:\\R processed data\\12-25 origin mean spectra.csv")
+
+hist<- info %>% 
+  cbind((spectra[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+            (spectra[,which((wtno>=919)&(wtno<=920))]),
+            (spectra[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (spectra[,which((wtno>=1451)&(wtno<=1452))])) %>% 
+  set_names(c(colnames(info),"p1","p2","p3","p4")) %>% filter(group!="buffer") %>% 
+#  gather("peak","value",c(p1,p2,p3,p4))
+  group_by(group) %>%
+  summarise(meanpn=mean(p1),sdpn=sd(p1),
+            meanpp=mean(p3),sdpp=sd(p3),
+            meanpl=mean(p4),sdpl=sd(p4)) %>%
+  ungroup()
+
+
+cell1<-info%>% 
+  cbind((D[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+            (D[,which((wtno>=919)&(wtno<=920))]),
+            (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (D[,which((wtno>=1451)&(wtno<=1452))])) %>% 
+    filter(group=="cell2") %>%
+  set_names(c("x","y","experiment","type","scan","cord","group","p1","p2","p3","p4"))
+
+cell2<-info%>% 
+  mutate(cord=paste(x,y,sep=",")) %>% 
+  mutate(group=svm$group)%>% 
+  mutate(group=ifelse(group=="cell",type,"buffer"))%>%  
+ cbind((D[,which((wtno>=749)&(wtno<=750))]),#nuclear acid
+            (D[,which((wtno>=919)&(wtno<=920))]),
+            (D[,which((wtno>=1003)&(wtno<=1004))]),#protein
+            (D[,which((wtno>=1451)&(wtno<=1452))])) %>% 
+    filter(group=="cell1") %>% 
+  set_names(c("x","y","experiment","type","scan","cord","group","p1","p2","p3","p4")) 
+
+ttest1<-t.test(cell1$p1,cell2$p1)
+
+ttest3<-t.test(cell1$p3,cell2$p3)
+
+ttest4<-t.test(cell1$p4,cell2$p4)
+#write.csv(hist,"E:\\R processed data\\9-5 hist.csv")
+```
+
+
+```{r manually save selected points}
+# test<-"cell2 1"
+# #cell1 1: 68
+# #cell1 2: 65
+# #cell2 1: 60
+# #cell2 2: 55
+# #cell2 3: 60
+# 
+# cell<-pmap %>% filter(experiment==test) %>% 
+#   mutate(mp1=ifelse(p1>=60,p1,0)) %>% 
+#   mutate(cord=paste(x,y,sep=",")) %>% 
+#   filter(mp1!=0)
+# 
+# cell23data<-a$corrected %>% 
+#   as.data.frame()%>% 
+#   set_names(wtno) %>% 
+#   cbind(info) %>% 
+#   mutate(cord=paste(x,y,sep=",")) %>% 
+#   filter(cord%in%cell$cord)
+# 
+# cellsum<-cell11data %>% 
+#   rbind(cell12data) %>% 
+#   rbind(cell21data) %>% 
+#   rbind(cell23data)
+# 
+# write.csv(cellsum,"E:\\R processed data\\8-29 celldataset.csv")
+```
+
+
+```{r origin peak images no bsl}
+library(RColorBrewer)
+
+orimap<-cbind(info,
+              (data[,which((wtno>=749)&(wtno<=750))]),
+              (data[,which((wtno>=919)&(wtno<=920))]),
+              (data[,which((wtno>=1003)&(wtno<=1004))]),
+              (data[,which((wtno>=1128)&(wtno<=1129))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+library(plotly)
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+orca(fig,paste0("orgin no bsl nuclear map of ",test),format = "png")
+
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p2, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+orca(fig,paste0("orgin no bsl protein map of ",test),format = "png")
+
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+orca(fig,paste0("orgin no bsl lipids map of ",test),format = "png")
+```
+
+
+```{r origin peak images bsl}
+
+
+orimap<-cbind(info,
+              (bsldata[,which((wtno>=749)&(wtno<=750))]),
+              (bsldata[,which((wtno>=919)&(wtno<=920))]),
+              (bsldata[,which((wtno>=1003)&(wtno<=1004))]),
+              (bsldata[,which((wtno>=1128)&(wtno<=1129))]))%>% 
+  set_names(c("x","y","experiment","type","scan","p1","p2","p3","p4"))
+
+library(plotly)
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p1, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0, 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(scaleanchor = "x"));fig
+orca(fig,paste0("orgin bsl nuclear map of ",test),format = "png")
+
+orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p2, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 100,
+          # zmin = 60,
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+orca(fig,paste0("orgin bsl protein map of ",test),format = "png")
+
+fig<-orimap %>% filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~p4, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+           # zmax = 100,
+           # zmin = 40,
+            colorscale = 'Greys',reversescale=F) %>%
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"));fig
+orca(fig,paste0("orgin bsl lipids map of ",test),format = "png")
+```
+
+```{r pc score images, echo=TRUE}
+
+library(plotly)
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.1, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+# scores %>% cbind(cord) %>% 
+# filter(group==1) %>% 
+# ggplot(aes(x,y,z=Comp.1))+
+#   geom_contour(color = "white", alpha = 0.5)
+# install.packages("orca")
+
+
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.2, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+scores %>% cbind(info) %>% 
+  # head() %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.3, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+
+scores %>% cbind(info) %>% 
+  filter(experiment==test) %>% 
+  plot_ly(x=~x,y=~y,z=~Comp.9, type = "contour",  
+          line = list(width = 0.05),
+         contours = list(coloring = 'heatmap'),
+          # zmax = 500,
+          # zmin = 0 
+            colorscale = 'Greens',reversescale=TRUE
+  ) %>% 
+  layout(autosize = F,
+         yaxis = list(
+           scaleanchor = "x"))
+
+#orca(fig, "surface-plot.png",format = "png")
+```
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+
+npc<-17
+DA<-scores %>% 
+  cbind(info) %>% 
+  mutate(cord=paste(x,y,sep=",")) %>% 
+  mutate(group=ifelse(cord%in%svm$cord,"cell","buffer")) %>% 
+  mutate(group=ifelse(group=="buffer",-1,1)) %>% 
+  select(-c(colnames(info),"cord")) %>% 
+  select(-c(18:1022))
+
+positions <- sample(nrow(DA),size=floor((nrow(DA)/4)*3))
+
+training<- DA[positions,]
+testing<- DA[-positions,]
+svm.model <- svm(group ~ ., data=training,type="eps-regression")
+#summary(svm.model)
+svm.pred <- predict(svm.model, testing)
+table(data.frame(testing$group,svm.pred))
+
+pred<-cbind(testing$group,svm.pred)
+```
+
+
+
+
